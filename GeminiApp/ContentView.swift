@@ -683,8 +683,8 @@ struct AdvancedChatView: View {
         .sheet(isPresented: $viewModel.showingSettings) {
             SettingsView(isPresented: $viewModel.showingSettings)
         }
-        .alert("Connection Error", isPresented: .constant(viewModel.errorMessage != nil)) {
-            Button("Retry") {
+        .alert("Connection Error Failed", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("Please Retry") {
                 viewModel.errorMessage = nil
             }
             Button("Cancel", role: .cancel) {
