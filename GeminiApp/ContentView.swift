@@ -3,17 +3,16 @@ import Foundation
 
 // MARK: - Color Palette
 extension Color {
-    static let primaryBackground = Color(red: 0.07, green: 0.07, blue: 0.09)
-    static let secondaryBackground = Color(red: 0.11, green: 0.11, blue: 0.13)
-    static let tertiaryBackground = Color(red: 0.15, green: 0.15, blue: 0.17)
-    static let quaternaryBackground = Color(red: 0.18, green: 0.18, blue: 0.20)
+    static let primaryBackground = Color(red: 0.06, green: 0.06, blue: 0.09)
+    static let secondaryBackground = Color(red: 0.09, green: 0.09, blue: 0.12)
+    static let cardBackground = Color(red: 0.12, green: 0.12, blue: 0.15)
     static let accentBlue = Color(red: 0.2, green: 0.6, blue: 1.0)
     static let accentPurple = Color(red: 0.5, green: 0.3, blue: 0.9)
     static let accentGreen = Color(red: 0.2, green: 0.8, blue: 0.4)
-    static let textPrimary = Color.white
-    static let textSecondary = Color(red: 0.7, green: 0.7, blue: 0.7)
-    static let textTertiary = Color(red: 0.5, green: 0.5, blue: 0.5)
-    static let borderColor = Color(red: 0.25, green: 0.25, blue: 0.27)
+    static let textPrimary = Color(red: 0.95, green: 0.95, blue: 0.97)
+    static let textSecondary = Color(red: 0.7, green: 0.7, blue: 0.75)
+    static let textTertiary = Color(red: 0.5, green: 0.5, blue: 0.55)
+    static let borderColor = Color(red: 0.25, green: 0.25, blue: 0.30)
 }
 
 // MARK: - Model
@@ -22,11 +21,6 @@ struct Message: Identifiable, Equatable {
     let text: String
     let isUser: Bool
     let timestamp: Date = Date()
-    let messageType: MessageType = .text
-    
-    enum MessageType {
-        case text, code, error, system
-    }
     
     static func == (lhs: Message, rhs: Message) -> Bool {
         lhs.id == rhs.id
@@ -35,10 +29,20 @@ struct Message: Identifiable, Equatable {
 
 // MARK: - Gemini API Service
 class GeminiService: ObservableObject {
-    private let apiKey = "YOUR_API_KEY_HERE"
-    private let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent")!
+    private let apiKey = "YOUR_API_KEY_HERE" // Replace with your actual API key
+    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     
     func sendMessage(_ message: String, completion: @escaping(Result<String, Error>) -> Void) {
+        guard !apiKey.isEmpty && apiKey != "YOUR_API_KEY_HERE" else {
+            completion(.failure(NSError(domain: "APIError", code: 0, userInfo: [NSLocalizedDescriptionKey: "API key not configured"])))
+            return
+        }
+        
+        guard let url = URL(string: baseURL) else {
+            completion(.failure(NSError(domain: "URLError", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -54,7 +58,12 @@ class GeminiService: ObservableObject {
             ]
         ]
         
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+        } catch {
+            completion(.failure(error))
+            return
+        }
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
@@ -67,11 +76,15 @@ class GeminiService: ObservableObject {
                 return
             }
             
-            if let response = try? JSONDecoder().decode(GeminiResponse.self, from: data),
-               let text = response.candidates.first?.content.parts.first?.text {
-                completion(.success(text))
-            } else {
-                completion(.failure(NSError(domain: "ParseError", code: 0, userInfo: [NSLocalizedDescriptionKey: "Failed to parse response"])))
+            do {
+                let response = try JSONDecoder().decode(GeminiResponse.self, from: data)
+                if let text = response.candidates.first?.content.parts.first?.text {
+                    completion(.success(text))
+                } else {
+                    completion(.failure(NSError(domain: "ParseError", code: 0, userInfo: [NSLocalizedDescriptionKey: "No response text found"])))
+                }
+            } catch {
+                completion(.failure(error))
             }
         }.resume()
     }
@@ -97,7 +110,7 @@ class ChatViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
     @Published var showingSettings: Bool = false
-    @Published var typingIndicator: Bool = false
+    @Published var expandedMessages: Set<UUID> = []
     
     private let geminiService = GeminiService()
     
@@ -107,7 +120,7 @@ class ChatViewModel: ObservableObject {
     
     private func setupWelcomeMessage() {
         let welcomeMessage = Message(
-            text: "Welcome to Gemini AI Pro! I'm here to assist you with any questions or tasks. How can I help you today?",
+            text: "Welcome to Gemini AI Chat! I'm here to assist you with any questions or tasks. How can I help you today?",
             isUser: false
         )
         messages.append(welcomeMessage)
@@ -122,28 +135,23 @@ class ChatViewModel: ObservableObject {
         let textToSend = inputText
         inputText = ""
         isLoading = true
-        typingIndicator = true
         errorMessage = nil
         
-        // Add slight delay for better UX
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.geminiService.sendMessage(textToSend) { [weak self] result in
-                DispatchQueue.main.async {
-                    self?.isLoading = false
-                    self?.typingIndicator = false
-                    
-                    switch result {
-                    case .success(let reply):
-                        let botMessage = Message(text: reply, isUser: false)
-                        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                            self?.messages.append(botMessage)
-                        }
-                    case .failure(let error):
-                        self?.errorMessage = error.localizedDescription
-                        let errorMessage = Message(text: "I apologize, but I encountered an error. Please try again in a moment.", isUser: false)
-                        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                            self?.messages.append(errorMessage)
-                        }
+        geminiService.sendMessage(textToSend) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.isLoading = false
+                
+                switch result {
+                case .success(let reply):
+                    let botMessage = Message(text: reply, isUser: false)
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        self?.messages.append(botMessage)
+                    }
+                case .failure(let error):
+                    self?.errorMessage = error.localizedDescription
+                    let errorMessage = Message(text: "I apologize, but I encountered an error. Please check your API key and try again.", isUser: false)
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        self?.messages.append(errorMessage)
                     }
                 }
             }
@@ -151,8 +159,9 @@ class ChatViewModel: ObservableObject {
     }
     
     func clearChat() {
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+        withAnimation(.easeInOut(duration: 0.3)) {
             messages.removeAll()
+            expandedMessages.removeAll()
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -161,21 +170,43 @@ class ChatViewModel: ObservableObject {
     }
     
     func deleteMessage(_ message: Message) {
-        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+        withAnimation(.easeInOut(duration: 0.3)) {
             messages.removeAll { $0.id == message.id }
+            expandedMessages.remove(message.id)
+        }
+    }
+    
+    func toggleMessageExpansion(_ messageId: UUID) {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            if expandedMessages.contains(messageId) {
+                expandedMessages.remove(messageId)
+            } else {
+                expandedMessages.insert(messageId)
+            }
         }
     }
 }
 
-// MARK: - Advanced Message Bubble
-struct AdvancedMessageBubble: View {
+// MARK: - Message Bubble
+struct MessageBubble: View {
     let message: Message
+    let isExpanded: Bool
     let onDelete: () -> Void
-    @State private var showingOptions = false
-    @State private var isPressed = false
+    let onToggleExpansion: () -> Void
+    
+    private var shouldShowReadMore: Bool {
+        !message.isUser && message.text.count > 150
+    }
+    
+    private var displayText: String {
+        if isExpanded || message.text.count <= 150 {
+            return message.text
+        }
+        return String(message.text.prefix(150)) + "..."
+    }
     
     var body: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 0) {
             if message.isUser {
                 Spacer(minLength: 50)
                 userMessageView
@@ -184,100 +215,82 @@ struct AdvancedMessageBubble: View {
                 Spacer(minLength: 50)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .contextMenu {
-            Button(action: copyMessage) {
-                Label("Copy", systemImage: "doc.on.doc")
+            Button("Copy", action: copyMessage)
+            if shouldShowReadMore {
+                Button(isExpanded ? "Show Less" : "Show More", action: onToggleExpansion)
             }
-            
-            Button(action: onDelete) {
-                Label("Delete", systemImage: "trash")
-            }
+            Button("Delete", action: onDelete)
         }
     }
     
     private var userMessageView: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            HStack {
-                Text(message.text)
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.accentBlue, Color.accentPurple],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .shadow(color: Color.accentBlue.opacity(0.3), radius: 10, x: 0, y: 5)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [Color.white.opacity(0.2), Color.clear],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
-                    )
-            }
+            Text(message.text)
+                .font(.system(size: 16))
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(LinearGradient(
+                            colors: [Color.accentBlue, Color.accentPurple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                )
             
-            HStack(spacing: 6) {
-                Text(formatTime(message.timestamp))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.textTertiary)
-                
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(.accentGreen)
-            }
+            Text(formatTime(message.timestamp))
+                .font(.caption2)
+                .foregroundColor(.textTertiary)
         }
     }
     
     private var aiMessageView: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: 12) {
             // AI Avatar
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentPurple.opacity(0.8), Color.accentBlue.opacity(0.6)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 40, height: 40)
-                    .shadow(color: Color.accentPurple.opacity(0.3), radius: 8, x: 0, y: 4)
-                
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
-            }
+            Circle()
+                .fill(LinearGradient(
+                    colors: [Color.accentPurple, Color.accentBlue],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .frame(width: 32, height: 32)
+                .overlay(
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white)
+                )
             
             VStack(alignment: .leading, spacing: 8) {
-                Text(message.text)
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundColor(.textPrimary)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.tertiaryBackground)
-                            .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.borderColor, lineWidth: 1)
-                    )
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(displayText)
+                        .font(.system(size: 16))
+                        .foregroundColor(.textPrimary)
+                    
+                    if shouldShowReadMore {
+                        Button(action: onToggleExpansion) {
+                            Text(isExpanded ? "Show Less" : "Show More")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.accentBlue)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.cardBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20)
+                                .stroke(Color.borderColor, lineWidth: 1)
+                        )
+                )
                 
                 Text(formatTime(message.timestamp))
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.caption2)
                     .foregroundColor(.textTertiary)
                     .padding(.leading, 4)
             }
@@ -295,265 +308,197 @@ struct AdvancedMessageBubble: View {
     }
 }
 
-// MARK: - Advanced Typing Indicator
-struct AdvancedTypingIndicator: View {
-    @State private var animationOffset: CGFloat = 0
+// MARK: - Typing Indicator
+struct TypingIndicator: View {
+    @State private var animationPhase: Int = 0
     
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            // AI Avatar
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentPurple.opacity(0.8), Color.accentBlue.opacity(0.6)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 40, height: 40)
-                    .shadow(color: Color.accentPurple.opacity(0.3), radius: 8, x: 0, y: 4)
-                
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-            
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    ForEach(0..<3) { index in
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.accentBlue, Color.accentPurple],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 10, height: 10)
-                            .scaleEffect(animationOffset == CGFloat(index) ? 1.3 : 1.0)
-                            .opacity(animationOffset == CGFloat(index) ? 1.0 : 0.6)
-                            .animation(
-                                .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
-                                value: animationOffset
-                            )
-                    }
-                    
-                    Text("AI is thinking...")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.textSecondary)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(Color.tertiaryBackground)
-                        .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
-                )
+        HStack(alignment: .top, spacing: 12) {
+            Circle()
+                .fill(LinearGradient(
+                    colors: [Color.accentPurple, Color.accentBlue],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .frame(width: 32, height: 32)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(Color.borderColor, lineWidth: 1)
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white)
                 )
+            
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.textSecondary)
+                        .frame(width: 6, height: 6)
+                        .scaleEffect(animationPhase == index ? 1.2 : 0.8)
+                        .opacity(animationPhase == index ? 1.0 : 0.5)
+                }
+                
+                Text("AI is typing...")
+                    .font(.system(size: 14))
+                    .foregroundColor(.textSecondary)
+                    .padding(.leading, 8)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.cardBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(Color.borderColor, lineWidth: 1)
+                    )
+            )
             
             Spacer(minLength: 50)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
-                animationOffset = 2
+            Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    animationPhase = (animationPhase + 1) % 3
+                }
             }
         }
     }
 }
 
-// MARK: - Professional Header
-struct ProfessionalHeader: View {
+// MARK: - Header View
+struct HeaderView: View {
     let clearAction: () -> Void
     let settingsAction: () -> Void
-    @State private var glowIntensity: Double = 0.5
     
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: 0) {
+            HStack {
                 HStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.accentPurple, Color.accentBlue],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 32, height: 32)
-                            .shadow(color: Color.accentPurple.opacity(glowIntensity), radius: 10, x: 0, y: 0)
-                        
-                        Image(systemName: "brain.head.profile")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                    }
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [Color.accentPurple, Color.accentBlue],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white)
+                        )
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Gemini AI Pro")
-                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                        Text("Gemini AI Chat")
+                            .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(.textPrimary)
                         
                         HStack(spacing: 6) {
                             Circle()
                                 .fill(Color.accentGreen)
-                                .frame(width: 8, height: 8)
-                                .shadow(color: Color.accentGreen, radius: 3, x: 0, y: 0)
+                                .frame(width: 6, height: 6)
                             
                             Text("Online")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.system(size: 12))
                                 .foregroundColor(.accentGreen)
                         }
                     }
                 }
-            }
-            
-            Spacer()
-            
-            HStack(spacing: 12) {
-                Button(action: settingsAction) {
-                    Image(systemName: "gear")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.textSecondary)
-                        .frame(width: 40, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.secondaryBackground)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.borderColor, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(ProfessionalButtonStyle())
                 
-                Button(action: clearAction) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.red)
-                        .frame(width: 40, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.red.opacity(0.1))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.red.opacity(0.3), lineWidth: 1)
-                        )
+                Spacer()
+                
+                HStack(spacing: 12) {
+                    Button(action: settingsAction) {
+                        Image(systemName: "gear")
+                            .font(.system(size: 16))
+                            .foregroundColor(.textSecondary)
+                            .frame(width: 36, height: 36)
+                            .background(Color.cardBackground)
+                            .clipShape(Circle())
+                    }
+                    
+                    Button(action: clearAction) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16))
+                            .foregroundColor(.red)
+                            .frame(width: 36, height: 36)
+                            .background(Color.cardBackground)
+                            .clipShape(Circle())
+                    }
                 }
-                .buttonStyle(ProfessionalButtonStyle())
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            
+            Divider()
+                .background(Color.borderColor)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 0)
-                .fill(Color.secondaryBackground)
-                .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
-        )
-        .onAppear {
-            withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
-                glowIntensity = 0.8
-            }
-        }
+        .background(Color.secondaryBackground)
     }
 }
 
-// MARK: - Advanced Input View
-struct AdvancedInputView: View {
+// MARK: - Input View
+struct InputView: View {
     @Binding var text: String
     let isLoading: Bool
     let sendAction: () -> Void
     @FocusState private var isTextFieldFocused: Bool
-    @State private var pulseAnimation = false
     
     var body: some View {
         VStack(spacing: 0) {
-            Rectangle()
-                .fill(Color.borderColor)
-                .frame(height: 1)
+            Divider()
+                .background(Color.borderColor)
             
-            HStack(spacing: 16) {
-                HStack(spacing: 12) {
+            HStack(spacing: 12) {
+                HStack {
                     TextField("Type your message here...", text: $text, axis: .vertical)
-                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .font(.system(size: 16))
                         .foregroundColor(.textPrimary)
                         .lineLimit(1...6)
                         .disabled(isLoading)
                         .focused($isTextFieldFocused)
                         .onSubmit {
-                            if !isLoading && canSend {
+                            if canSend {
                                 sendAction()
                             }
                         }
                     
                     if !text.isEmpty {
-                        Button(action: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                text = ""
-                            }
-                        }) {
+                        Button(action: { text = "" }) {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 18))
+                                .font(.system(size: 16))
                                 .foregroundColor(.textTertiary)
                         }
-                        .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .background(
-                    RoundedRectangle(cornerRadius: 25, style: .continuous)
-                        .fill(Color.tertiaryBackground)
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(Color.cardBackground)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 25, style: .continuous)
-                                .stroke(
-                                    isTextFieldFocused ?
-                                    LinearGradient(colors: [Color.accentBlue, Color.accentPurple], startPoint: .leading, endPoint: .trailing) :
-                                    LinearGradient(colors: [Color.borderColor], startPoint: .leading, endPoint: .trailing),
-                                    lineWidth: isTextFieldFocused ? 2 : 1
-                                )
+                            RoundedRectangle(cornerRadius: 24)
+                                .stroke(isTextFieldFocused ? Color.accentBlue : Color.borderColor, lineWidth: 1)
                         )
                 )
-                .shadow(color: isTextFieldFocused ? Color.accentBlue.opacity(0.2) : Color.clear, radius: 10, x: 0, y: 0)
                 
                 Button(action: sendAction) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(
-                                canSend || isLoading ?
-                                LinearGradient(colors: [Color.accentBlue, Color.accentPurple], startPoint: .topLeading, endPoint: .bottomTrailing) :
-                                LinearGradient(colors: [Color.textTertiary.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                            )
-                            .frame(width: 50, height: 50)
-                            .scaleEffect(pulseAnimation && isLoading ? 1.1 : 1.0)
-                            .shadow(color: (canSend || isLoading) ? Color.accentBlue.opacity(0.4) : Color.clear, radius: 10, x: 0, y: 5)
-                        
-                        Image(systemName: isLoading ? "stop.fill" : "arrow.up")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
-                            .rotationEffect(.degrees(isLoading ? 0 : 0))
-                    }
+                    Image(systemName: isLoading ? "stop.fill" : "arrow.up")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 44)
+                        .background(
+                            Circle()
+                                .fill(canSend || isLoading ?
+                                      LinearGradient(colors: [Color.accentBlue, Color.accentPurple],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing) :
+                                      LinearGradient(colors: [Color.textTertiary], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                )
+                        )
                 }
                 .disabled(!canSend && !isLoading)
-                .buttonStyle(ProfessionalButtonStyle())
-                .onChange(of: isLoading) { loading in
-                    if loading {
-                        withAnimation(.easeInOut(duration: 1).repeatForever(autoreverses: true)) {
-                            pulseAnimation = true
-                        }
-                    } else {
-                        pulseAnimation = false
-                    }
-                }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
             .background(Color.secondaryBackground)
         }
     }
@@ -563,42 +508,38 @@ struct AdvancedInputView: View {
     }
 }
 
-// MARK: - Professional Button Style
-struct ProfessionalButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-            .opacity(configuration.isPressed ? 0.8 : 1.0)
-            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
-    }
-}
-
 // MARK: - Settings View
 struct SettingsView: View {
     @Binding var isPresented: Bool
     
     var body: some View {
         NavigationView {
-            List {
-                Section("Appearance") {
+            Form {
+                Section("App Information") {
                     HStack {
-                        Image(systemName: "moon.fill")
+                        Image(systemName: "brain.head.profile")
                             .foregroundColor(.accentBlue)
-                        Text("Dark Mode")
-                        Spacer()
-                        Text("Always On")
-                            .foregroundColor(.textSecondary)
+                        Text("Model: Gemini 2.0 Flash")
+                    }
+                    
+                    HStack {
+                        Image(systemName: "info.circle")
+                            .foregroundColor(.accentPurple)
+                        Text("Version: 1.0.0")
                     }
                 }
                 
-                Section("AI Settings") {
+                Section("Configuration") {
                     HStack {
-                        Image(systemName: "brain.head.profile")
-                            .foregroundColor(.accentPurple)
-                        Text("Model")
-                        Spacer()
-                        Text("Gemini Pro")
-                            .foregroundColor(.textSecondary)
+                        Image(systemName: "key")
+                            .foregroundColor(.accentGreen)
+                        Text("API Key: Configured")
+                    }
+                    
+                    HStack {
+                        Image(systemName: "lock.shield")
+                            .foregroundColor(.orange)
+                        Text("Privacy: Protected")
                     }
                 }
             }
@@ -609,6 +550,7 @@ struct SettingsView: View {
                     Button("Done") {
                         isPresented = false
                     }
+                    .foregroundColor(.accentBlue)
                 }
             }
         }
@@ -617,100 +559,87 @@ struct SettingsView: View {
 }
 
 // MARK: - Main Chat View
-struct AdvancedChatView: View {
+struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
     
     var body: some View {
-        ZStack {
-            Color.primaryBackground.ignoresSafeArea()
+        VStack(spacing: 0) {
+            HeaderView(
+                clearAction: viewModel.clearChat,
+                settingsAction: { viewModel.showingSettings = true }
+            )
             
-            VStack(spacing: 0) {
-                ProfessionalHeader(
-                    clearAction: viewModel.clearChat,
-                    settingsAction: { viewModel.showingSettings = true }
-                )
-                
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 24) {
-                            ForEach(viewModel.messages) { message in
-                                AdvancedMessageBubble(
-                                    message: message,
-                                    onDelete: { viewModel.deleteMessage(message) }
-                                )
-                                .id(message.id)
-                                .transition(.asymmetric(
-                                    insertion: .scale(scale: 0.8).combined(with: .opacity).combined(with: .offset(y: 20)),
-                                    removal: .scale(scale: 0.8).combined(with: .opacity).combined(with: .offset(y: -20))
-                                ))
-                            }
-                            
-                            if viewModel.typingIndicator {
-                                AdvancedTypingIndicator()
-                                    .id("typing")
-                                    .transition(.asymmetric(
-                                        insertion: .scale(scale: 0.8).combined(with: .opacity).combined(with: .offset(y: 20)),
-                                        removal: .scale(scale: 0.8).combined(with: .opacity).combined(with: .offset(y: -20))
-                                    ))
-                            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(viewModel.messages) { message in
+                            MessageBubble(
+                                message: message,
+                                isExpanded: viewModel.expandedMessages.contains(message.id),
+                                onDelete: { viewModel.deleteMessage(message) },
+                                onToggleExpansion: { viewModel.toggleMessageExpansion(message.id) }
+                            )
+                            .id(message.id)
                         }
-                        .padding(.vertical, 30)
-                    }
-                    .onChange(of: viewModel.messages.count) { _ in
-                        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                            if let lastMessage = viewModel.messages.last {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
+                        
+                        if viewModel.isLoading {
+                            TypingIndicator()
+                                .id("typing")
                         }
                     }
-                    .onChange(of: viewModel.typingIndicator) { isTyping in
-                        if isTyping {
-                            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                                proxy.scrollTo("typing", anchor: .bottom)
-                            }
+                    .padding(.vertical, 16)
+                }
+                .background(Color.primaryBackground)
+                .onChange(of: viewModel.messages.count) { _ in
+                    if let lastMessage = viewModel.messages.last {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
                         }
                     }
                 }
-                
-                AdvancedInputView(
-                    text: $viewModel.inputText,
-                    isLoading: viewModel.isLoading,
-                    sendAction: viewModel.sendMessage
-                )
+                .onChange(of: viewModel.isLoading) { isLoading in
+                    if isLoading {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo("typing", anchor: .bottom)
+                        }
+                    }
+                }
             }
+            
+            InputView(
+                text: $viewModel.inputText,
+                isLoading: viewModel.isLoading,
+                sendAction: viewModel.sendMessage
+            )
         }
+        .background(Color.primaryBackground)
         .preferredColorScheme(.dark)
         .sheet(isPresented: $viewModel.showingSettings) {
             SettingsView(isPresented: $viewModel.showingSettings)
         }
-        .alert("Connection Error Failed", isPresented: .constant(viewModel.errorMessage != nil)) {
-            Button("Please Retry") {
-                viewModel.errorMessage = nil
-            }
-            Button("Cancel", role: .cancel) {
+        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") {
                 viewModel.errorMessage = nil
             }
         } message: {
-            Text(viewModel.errorMessage ?? "")
+            Text(viewModel.errorMessage ?? "An error occurred")
         }
     }
 }
 
 // MARK: - App Entry Point
 @main
-struct AdvancedGeminiChatApp: App {
+struct GeminiChatApp: App {
     var body: some Scene {
         WindowGroup {
-            AdvancedChatView()
-                .preferredColorScheme(.dark)
+            ChatView()
         }
     }
 }
 
 // MARK: - Preview
-struct AdvancedChatView_Previews: PreviewProvider {
+struct ChatView_Previews: PreviewProvider {
     static var previews: some View {
-        AdvancedChatView()
-            .preferredColorScheme(.dark)
+        ChatView()
     }
 }
